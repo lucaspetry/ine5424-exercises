@@ -17,7 +17,6 @@ Scheduler_Timer * Thread::_timer;
 Thread* volatile Thread::_running;
 Thread::Queue Thread::_ready;
 Thread::Queue Thread::_suspended;
-
 // Methods
 void Thread::constructor_prolog(unsigned int stack_size)
 {
@@ -73,8 +72,9 @@ int Thread::join()
 
     db<Thread>(TRC) << "Thread::join(this=" << this << ",state=" << _state << ")" << endl;
 
-    while(_state != FINISHING)
-        yield(); // implicit unlock()
+    if(_state != FINISHING){
+        _running->sleep(&_joined); // implicit unlock()
+    }
 
     unlock();
 
@@ -139,6 +139,43 @@ void Thread::resume()
    unlock();
 }
 
+void Thread::sleep(Queue * sleeping)
+{
+    lock();
+    Thread* thread = running();
+    thread->_state = WAITING;
+    sleeping->insert(&thread->_link);
+    if(!_ready.empty()){
+        _running = _ready.remove()->object();
+        _running->_state = RUNNING;
+        dispatch(thread, _running);
+    } else {
+        idle();
+    }
+    unlock();
+}
+
+void Thread::wakeup(Queue * sleeping)
+{   
+    lock();
+    if(!sleeping->empty()) {
+        Thread * thread = sleeping->remove()->object();
+        thread->_state = READY;
+        _ready.insert(&thread->_link);
+    }
+    unlock();
+}
+
+void Thread::wakeup_all(Queue * sleeping)
+{
+    lock();
+    while(!sleeping->empty()) {
+        Thread * thread = sleeping->remove()->object();
+        thread->_state = READY;
+        _ready.insert(&thread->_link);
+    }
+    unlock();
+}
 
 // Class methods
 void Thread::yield()
@@ -168,6 +205,8 @@ void Thread::exit(int status)
     lock();
 
     db<Thread>(TRC) << "Thread::exit(status=" << status << ") [running=" << running() << "]" << endl;
+
+    wakeup_all(&(_running->_joined));
 
     while(_ready.empty() && !_suspended.empty())
         idle(); // implicit unlock();
